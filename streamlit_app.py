@@ -28,7 +28,8 @@ def month_starts_between(start_dt: datetime, end_dt: datetime) -> list[datetime]
         cur = cur.replace(year=y, month=m)
     return out
 
-def last_n_completed_months(n: int = 3) -> set[str]:
+def get_last_n_completed_months(n: int = 3) -> list[datetime]:
+    """Returns list of datetime objects (first of each month) for last n completed months, oldest first."""
     today = datetime.today().replace(day=1)
     months = []
     cur = today
@@ -36,8 +37,11 @@ def last_n_completed_months(n: int = 3) -> set[str]:
         y = cur.year if cur.month > 1 else cur.year - 1
         m = cur.month - 1 if cur.month > 1 else 12
         cur = cur.replace(year=y, month=m)
-        months.append(cur.strftime("%Y%m"))
-    return set(months)
+        months.append(cur)
+    return list(reversed(months))  # oldest first
+
+def last_n_completed_months(n: int = 3) -> set[str]:
+    return {m.strftime("%Y%m") for m in get_last_n_completed_months(n)}
 
 def get_with_retry(session: requests.Session, url: str, *, headers=None, params=None, timeout=30, max_tries=5):
     backoff = 1.0
@@ -96,11 +100,18 @@ def fetch_pv_train(api_key: str, start_dt: datetime, end_dt: datetime) -> pd.Dat
 
 st.title("LTA Train Station Passenger Volume Analysis")
 
+# Compute allowed date range from last 3 completed months
+available_months = get_last_n_completed_months(3)
+min_date = available_months[0].date()   # first day of oldest allowed month
+max_date = (available_months[-1].replace(day=1) + timedelta(days=31)).replace(day=1) - timedelta(days=1)  # last day of newest allowed month
+
+st.info(f"ℹ️ The LTA API only provides data for the last 3 completed months: **{available_months[0].strftime('%B %Y')}** to **{available_months[-1].strftime('%B %Y')}**.")
+
 col1, col2 = st.columns(2)
 with col1:
-    start_date = st.date_input("Start Date", value=datetime.now() - timedelta(days=120))
+    start_date = st.date_input("Start Date", value=min_date, min_value=min_date, max_value=max_date)
 with col2:
-    end_date = st.date_input("End Date", value=datetime.now() - timedelta(days=60))
+    end_date = st.date_input("End Date", value=max_date, min_value=min_date, max_value=max_date)
 
 try:
     raw_df = fetch_pv_train(api_key, datetime.combine(start_date, datetime.min.time()),
@@ -140,10 +151,8 @@ try:
         station_codes = set()
         for s in stations:
             station_codes.update(STATION_CODES.get(s, []))
-        
-        print("Before", df["PT_CODE"].unique())
+
         df = df[(df["PT_TYPE"] == "TRAIN") & (df["PT_CODE"].isin(station_codes)) & (df["TIME_PER_HOUR"].isin(hours))]
-        print("After", df["PT_CODE"].unique())
 
         ym = df["YEAR_MONTH"].astype(str).str.strip()
         df["MONTH"] = pd.to_datetime(
